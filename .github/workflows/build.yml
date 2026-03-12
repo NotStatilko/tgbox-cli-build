@@ -1,0 +1,151 @@
+name: Build tgbox-cli
+
+on:
+  push:
+    paths:
+      - config.env
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # -------------------------
+      # Checkout repository
+      # -------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -------------------------
+      # Load config.env & set hashes
+      # -------------------------
+      - name: Load config.env
+        shell: bash
+        run: |
+          set -a
+          source config.env
+          set +a
+
+          # Short hashes
+          TGB_S=${TGBOX_COMMIT_HASH:0:8}
+          TGB_C_S=${TGBOX_CLI_COMMIT_HASH:0:8}
+
+          # Export to GitHub env
+          echo "TGB_S=$TGB_S" >> $GITHUB_ENV
+          echo "TGB_C_S=$TGB_C_S" >> $GITHUB_ENV
+          echo "TGBOX_COMMIT_HASH=$TGBOX_COMMIT_HASH" >> $GITHUB_ENV
+          echo "TGBOX_CLI_COMMIT_HASH=$TGBOX_CLI_COMMIT_HASH" >> $GITHUB_ENV
+          echo "FFMPEG_PREVIEW_LINUX_LINK=$FFMPEG_PREVIEW_LINUX_LINK" >> $GITHUB_ENV
+          echo "FFMPEG_PREVIEW_WINDOWS_LINK=$FFMPEG_PREVIEW_WINDOWS_LINK" >> $GITHUB_ENV
+          echo "FFMPEG_PREVIEW_MACOS_LINK=$FFMPEG_PREVIEW_MACOS_LINK" >> $GITHUB_ENV
+
+      # -------------------------
+      # Linux dependencies
+      # -------------------------
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential zip zlib1g-dev wget git python3 python3-venv python3-pip
+
+      # -------------------------
+      # macOS dependencies
+      # -------------------------
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install zip wget git python3
+
+      # -------------------------
+      # Windows dependencies (PowerShell)
+      # -------------------------
+      - name: Setup Windows tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install git zip unzip -y
+
+      # -------------------------
+      # Setup Python (Windows)
+      # -------------------------
+      - name: Setup Python
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.14
+
+      # -------------------------
+      # Run build (Linux/macOS)
+      # -------------------------
+      - name: Build tgbox-cli (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      # -------------------------
+      # Run build (Windows, PowerShell)
+      # -------------------------
+      - name: Build tgbox-cli (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+          ./build.ps1
+
+      # -------------------------
+      # Package artifact (cross-platform)
+      # -------------------------
+      - name: Package artifact
+        shell: bash
+        run: |
+          mkdir -p artifact  # just in case
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            FILENAME="tgbox-cli-${{ env.TGB_S }}-${{ env.TGB_C_S }}-Windows.zip"
+            powershell -Command "Compress-Archive -LiteralPath @(Get-ChildItem artifact -File | ForEach-Object { \$_.FullName }) -DestinationPath $FILENAME -Force"
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            FILENAME="tgbox-cli-${{ env.TGB_S }}-${{ env.TGB_C_S }}-macOS.zip"
+            (cd artifact && zip -r "../$FILENAME" .)
+          else
+            FILENAME="tgbox-cli-${{ env.TGB_S }}-${{ env.TGB_C_S }}-Linux.zip"
+            (cd artifact && zip -r "../$FILENAME" .)
+          fi
+
+          echo "PACKAGE=$FILENAME" >> $GITHUB_ENV
+
+      # -------------------------
+      # Upload artifact
+      # -------------------------
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tgbox-cli-${{ env.TGB_S }}-${{ env.TGB_C_S }}-${{ runner.os }}
+          path: ${{ env.PACKAGE }}
+          overwrite: true
+
+      # -------------------------
+      # Upload to GitHub Release
+      # -------------------------
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:  tgbox-cli-${{ env.TGB_S }}-${{ env.TGB_C_S }}
+          name:  tgbox-cli-${{ env.TGB_S }}-${{ env.TGB_C_S }}
+          body: |
+            `tgbox-cli` build
+
+            **tgbox** `HEAD`: `${{ env.TGBOX_COMMIT_HASH }}`
+            **tgbox-cli** `HEAD`: `${{ env.TGBOX_CLI_COMMIT_HASH }}`
+            **ffmpeg**: [**Linux**](${{ env.FFMPEG_PREVIEW_LINUX_LINK }}), [**Windows**](${{ env.FFMPEG_PREVIEW_WINDOWS_LINK }}), [**macOS**](${{ env.FFMPEG_PREVIEW_MACOS_LINK }})
+
+            Generated automatically via **GitHub Actions**.
+          files: ${{ env.PACKAGE }}
+          overwrite_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
